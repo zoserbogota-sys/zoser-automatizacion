@@ -151,6 +151,11 @@ def _resolver_sheet(wb, candidatos: list):
     for c in candidatos:
         if c in nombres:
             return c
+    # Fallback tolerante a mayúsculas/espacios (ej. 'Grafico fallas HR' vs 'Grafico Fallas HR')
+    norm = {n.strip().lower(): n for n in nombres}
+    for c in candidatos:
+        if c.strip().lower() in norm:
+            return norm[c.strip().lower()]
     return None
 
 
@@ -164,6 +169,8 @@ def llenar_plantilla(
     config: ProyectoConfig,
 ) -> None:
     n = config.num_sensores
+    incluir_temp = config.variable_calificacion in ('temperatura', 'ambas')
+    incluir_hum  = config.variable_calificacion in ('humedad', 'ambas')
     wb = openpyxl.load_workbook(ruta_plantilla, keep_vba=False)
     wb.calculation.calcMode = 'auto'
     wb.calculation.fullCalcOnLoad = True
@@ -201,34 +208,60 @@ def llenar_plantilla(
                     start_row=min_row + extra, start_column=min_col,
                     end_row=max_row + extra, end_column=max_col)
 
-    _llenar_primarios(wb, sensores, timestamps, n)
-    _llenar_hoja_T(wb, sensores, timestamps, n)
-    _llenar_hoja_HR(wb, sensores, timestamps, n)
+    _llenar_primarios(wb, sensores, timestamps, n, incluir_temp, incluir_hum)
+    if incluir_temp:
+        _llenar_hoja_T(wb, sensores, timestamps, n)
+    if incluir_hum:
+        _llenar_hoja_HR(wb, sensores, timestamps, n)
 
     sheet_ft = _resolver_sheet(wb, ['Fallas Tem', 'Fallas Tem '])
     sheet_fh = _resolver_sheet(wb, ['Fallas HR', 'Fallas HR '])
     max_fallas = 60 if config.tipo_prueba == 'PO' else 35
-    if sheet_ft:
+    if incluir_temp and sheet_ft:
         _llenar_fallas(wb, sheet_ft, df_fallas_temp, es_temp=True, max_filas=max_fallas)
         _escribir_nombres_fallas(wb, sheet_ft, tipo_plantilla)
-    if sheet_fh:
+    if incluir_hum and sheet_fh:
         _llenar_fallas(wb, sheet_fh, df_fallas_hum, es_temp=False, max_filas=max_fallas)
         _escribir_nombres_fallas(wb, sheet_fh, tipo_plantilla)
 
-    _llenar_analisis(wb, config, n, sensores)
+    _llenar_analisis(wb, config, n, sensores, incluir_temp, incluir_hum)
+
+    # Ocultar hojas de la variable no calificada (se mantiene la estructura del
+    # libro pero no se muestran al abrir el archivo).
+    if not incluir_temp:
+        hojas_temp = [
+            _resolver_sheet(wb, ['T']),
+            _resolver_sheet(wb, ['GT']),
+            sheet_ft,
+            _resolver_sheet(wb, ['Grafico Fallas Tem', 'Grafico fallas Tem', 'Grafico Fallas Tem ']),
+        ]
+        for nm in hojas_temp:
+            if nm:
+                wb[nm].sheet_state = 'hidden'
+    if not incluir_hum:
+        hojas_hum = [
+            _resolver_sheet(wb, ['HR']),
+            _resolver_sheet(wb, ['GHR']),
+            sheet_fh,
+            _resolver_sheet(wb, ['Grafico Fallas HR', 'Grafico fallas HR', 'Grafico Fallas HR ']),
+        ]
+        for nm in hojas_hum:
+            if nm:
+                wb[nm].sheet_state = 'hidden'
 
     wb.save(ruta_salida)
     wb.close()
 
     _inyectar_cuadros_info(ruta_plantilla, ruta_salida, config)
-    _patch_chart_n_sensores(ruta_salida, n)
+    _patch_chart_n_sensores(ruta_salida, n, incluir_temp, incluir_hum)
 
 
 # ─────────────────────────────────────────────────────────────────
 #  PRIMARIOS
 # ─────────────────────────────────────────────────────────────────
 
-def _llenar_primarios(wb, sensores: List[Sensor], timestamps: pd.Series, n: int) -> None:
+def _llenar_primarios(wb, sensores: List[Sensor], timestamps: pd.Series, n: int,
+                       incluir_temp: bool = True, incluir_hum: bool = True) -> None:
     ws = wb[SHEET_PRIMARIOS]
     rows = min(len(timestamps), MAX_PRIMARIOS)
 
@@ -356,6 +389,30 @@ def _llenar_primarios(wb, sensores: List[Sensor], timestamps: pd.Series, n: int)
                 continue
             ws.cell(row=row, column=_prim_temp_col(pos)).value = _safe_temp(sensor.datos['temperatura'].iloc[i])
             ws.cell(row=row, column=_prim_hum_col(pos, n)).value = _safe_hum(sensor.datos['humedad'].iloc[i])
+
+    # ── Ocultar el bloque completo de la variable no calificada ─────────────────
+    # Primarios no comparte columnas con ninguna otra tabla, así que ocultar
+    # columnas enteras aquí es seguro (a diferencia de la hoja Análisis).
+    _last_row_clear = PRIMARIOS_ROW_START + rows
+    if not incluir_temp:
+        for pos in range(1, n + 1):
+            col = _prim_temp_col(pos)
+            ltr = _cl(col)
+            for r in range(1, _last_row_clear):
+                ws.cell(row=r, column=col).value = None
+            ws.column_dimensions[ltr].hidden = True
+            ws.column_dimensions[ltr].width  = 0
+    if not incluir_hum:
+        for pos in range(1, n + 1):
+            col = _prim_hum_col(pos, n)
+            ltr = _cl(col)
+            for r in range(1, _last_row_clear):
+                ws.cell(row=r, column=col).value = None
+            ws.column_dimensions[ltr].hidden = True
+            ws.column_dimensions[ltr].width  = 0
+        ltr_skip = _cl(_skip_col)
+        ws.column_dimensions[ltr_skip].hidden = True
+        ws.column_dimensions[ltr_skip].width  = 0
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -564,11 +621,21 @@ def _llenar_fallas(wb, sheet_name: str, df: pd.DataFrame, es_temp: bool, max_fil
 #  ANÁLISIS
 # ─────────────────────────────────────────────────────────────────
 
-def _llenar_analisis(wb, config: ProyectoConfig, n: int, sensores: List[Sensor]) -> None:
+def _llenar_analisis(wb, config: ProyectoConfig, n: int, sensores: List[Sensor],
+                      incluir_temp: bool = True, incluir_hum: bool = True) -> None:
     nombre = _resolver_sheet(wb, ['Análisis', 'Analisis', 'An\u00e1lisis'])
     if not nombre:
         return
     ws = wb[nombre]
+
+    # Slot dinámico de la Tabla 2/3 (filas 19, 21, 22, 23-31, 32): esas filas
+    # tienen temperatura en columnas 1-5 (izquierda) y humedad en 7-11
+    # (derecha) EN LA MISMA fila. Si se excluye temperatura, humedad se mueve
+    # al slot izquierdo para no dejar un hueco visual donde estaba su tabla.
+    # Tabla 4/5/6 no se ven afectadas: ya usan la misma columna para ambas
+    # variables (solo cambian de fila), así que no tienen este problema.
+    slot_izq = 'temp' if incluir_temp else ('hum' if incluir_hum else None)
+    slot_der = 'hum' if (incluir_temp and incluir_hum) else None
 
     # Basic config cells
     ws['C2'] = config.empresa
@@ -640,27 +707,52 @@ def _llenar_analisis(wb, config: ProyectoConfig, n: int, sensores: List[Sensor])
 
     # Reference style for serial rows: use position-2 (col E = _T1_S_COL+1)
     # which is a merged E15:E16 cell with the correct blue fill/border/font.
-    _t1_ser_ref = ws.cell(row=_T1_SER, column=_T1_S_COL + 1)
+    _t1_ser_ref  = ws.cell(row=_T1_SER, column=_T1_S_COL + 1)
+    # Reference style for the "(+)" note (pos 1 = D16, the only one unmerged
+    # from row 15 in the template) — used to style the note on every position.
+    # Border included: ws.unmerge_cells() resets the freed slave cell's border
+    # to none, so it must be re-applied explicitly after unmerging below.
+    _t1_note_ref_font   = _copy_obj(ws.cell(row=_T1_NOTE, column=_T1_S_COL).font)
+    _t1_note_ref_align  = _copy_obj(ws.cell(row=_T1_NOTE, column=_T1_S_COL).alignment)
+    _t1_note_ref_border = _copy_obj(ws.cell(row=_T1_NOTE, column=_T1_S_COL).border)
 
-    # Write and style new sensor cols (n > 9) in rows 14-15, add row 15-16 merge
-    for pos in range(10, n + 1):
-        col  = 3 + pos
-        pc_t = _prim_temp_col(pos)
-        # Row 14: position label with blue fill + bold font
+    # Write position/serial identifiers for ALL sensor cols (rows 14-15).
+    # El template (pos 1-9) trae por defecto una fórmula fija apuntando a la
+    # columna de TEMPERATURA de Primarios. Si la temperatura queda excluida
+    # (solo humedad) esa columna se borra y el identificador se rompe (muestra
+    # "0,00" en vez del nombre/serial) — por eso se reescribe SIEMPRE (no solo
+    # para pos > 9) usando la columna de la variable que sí está incluida.
+    #
+    # Fila 16 ("(+)"): en la plantilla solo la posición 1 trae esta nota (las
+    # demás quedan fusionadas 15:16 con el serial). Se desfusiona cada columna
+    # y se escribe la nota en todas las posiciones para que la tabla siempre
+    # se vea uniforme (posición 1 con "(++)(+)", el resto con "(+)").
+    for pos in range(1, n + 1):
+        col    = 3 + pos
+        id_col = _prim_temp_col(pos) if incluir_temp else _prim_hum_col(pos, n)
+        # Deshacer el merge 15:16 del template (pos 2-9) para poder escribir
+        # la fila 16 de forma independiente, igual que ya está la posición 1.
+        for mr in list(ws.merged_cells.ranges):
+            if mr.min_row == _T1_SER and mr.max_row == _T1_NOTE and mr.min_col == col:
+                ws.unmerge_cells(str(mr))
+        # Row 14: position label
         c14 = ws.cell(row=_T1_POS, column=col)
-        c14.value = f'=Primarios!{_cl(pc_t)}5'
-        c14.fill  = _copy_obj(_t1_fill)
-        c14.font  = _copy_obj(_t1_font)
-        # Row 15: serial — copy full style from reference pos-2 cell
+        c14.value = f'=Primarios!{_cl(id_col)}5'
+        # Row 15: serial
         c15 = ws.cell(row=_T1_SER, column=col)
-        c15.value = f'=Primarios!{_cl(pc_t)}3'
-        _copy_cell_style(_t1_ser_ref, c15)
-        # Merge rows 15-16 for the serial cell (same as template pos 2-9)
-        try:
-            ws.merge_cells(start_row=_T1_SER, start_column=col,
-                           end_row=_T1_NOTE, end_column=col)
-        except Exception:
-            pass
+        c15.value = f'=Primarios!{_cl(id_col)}3'
+        if pos > 9:
+            # Columnas nuevas (más allá de la plantilla de 9 sensores): copiar
+            # el estilo de las columnas de referencia.
+            c14.fill = _copy_obj(_t1_fill)
+            c14.font = _copy_obj(_t1_font)
+            _copy_cell_style(_t1_ser_ref, c15)
+        # Row 16: nota "(+)" — siempre visible, "(++)(+)" solo en la posición 1.
+        c16 = ws.cell(row=_T1_NOTE, column=col)
+        c16.value     = '(++)(+)' if pos == 1 else '(+)'
+        c16.font      = _copy_obj(_t1_note_ref_font)
+        c16.alignment = _copy_obj(_t1_note_ref_align)
+        c16.border    = _copy_obj(_t1_note_ref_border)
 
     # Row positions.
     # Template is designed for N=9 with row_global=32. For N<9 no rows are
@@ -724,23 +816,40 @@ def _llenar_analisis(wb, config: ProyectoConfig, n: int, sensores: List[Sensor])
     # Add NO→red rule for the full sensor range.
     # The template only has SI→green; "NO"/"NO1"/"NO2" cells must be explicitly red.
     # 8-char ARGB: 'FF' prefix = fully opaque.
+    # Las reglas se aplican según qué variable ocupa cada slot (no según
+    # incluir_temp/incluir_hum directamente): si humedad se mudó al slot
+    # izquierdo (solo humedad), D23:E debe recibir SUS reglas, y J23:K —ahora
+    # vacío— no debe recibir ninguna, o una celda en blanco cae en
+    # notEqual("SI") y se pinta de rojo sin motivo (ese era el bug).
     _red_fill   = PatternFill(start_color='FFFF0000', end_color='FFFF0000', fill_type='solid')
     _green_fill = PatternFill(start_color='FF00B050', end_color='FF00B050', fill_type='solid')
-    ws.conditional_formatting.add(
-        f'D23:E{_last_sensor_row}',
-        CellIsRule(operator='equal', formula=['"SI"'], fill=_green_fill))
-    ws.conditional_formatting.add(
-        f'J23:K{_last_sensor_row}',
-        CellIsRule(operator='equal', formula=['"SI"'], fill=_green_fill))
-    ws.conditional_formatting.add(
-        f'D23:E{_last_sensor_row}',
-        CellIsRule(operator='notEqual', formula=['"SI"'], fill=_red_fill))
-    ws.conditional_formatting.add(
-        f'J23:K{_last_sensor_row}',
-        CellIsRule(operator='notEqual', formula=['"SI"'], fill=_red_fill))
+    if slot_izq is not None:
+        ws.conditional_formatting.add(
+            f'D23:E{_last_sensor_row}',
+            CellIsRule(operator='equal', formula=['"SI"'], fill=_green_fill))
+        ws.conditional_formatting.add(
+            f'D23:E{_last_sensor_row}',
+            CellIsRule(operator='notEqual', formula=['"SI"'], fill=_red_fill))
+    if slot_der is not None:
+        ws.conditional_formatting.add(
+            f'J23:K{_last_sensor_row}',
+            CellIsRule(operator='equal', formula=['"SI"'], fill=_green_fill))
+        ws.conditional_formatting.add(
+            f'J23:K{_last_sensor_row}',
+            CellIsRule(operator='notEqual', formula=['"SI"'], fill=_red_fill))
 
     # Font for new sensor rows (pos > 9) — explicit Arial 8pt black to avoid theme-color drift
     _row_font = openpyxl.styles.Font(name='Arial', size=8, bold=False)
+
+    # Blank value + fill + border for a plain (non-merged) cell — used to fully
+    # erase the excluded variable's identifier/result columns in the per-sensor
+    # table, not just their value (a leftover blue header or grid still reads
+    # as "an empty table" to the user).
+    def _wipe_plain(r, c):
+        cell = ws.cell(row=r, column=c)
+        cell.value  = None
+        cell.fill   = PatternFill()
+        cell.border = openpyxl.styles.Border()
 
     # Write N sensor rows (23 to 22+n)
     for pos in range(1, n + 1):
@@ -748,16 +857,37 @@ def _llenar_analisis(wb, config: ProyectoConfig, n: int, sensores: List[Sensor])
         tc  = _t_data_col(pos)
         col = _cl(tc)   # D, E, F, ...
 
-        ws.cell(row=r, column=1).value  = f'={_cl(tc)}15'
-        ws.cell(row=r, column=2).value  = f'=T!{col}308'
-        ws.cell(row=r, column=3).value  = f'=B${row_global}-B{r}'
-        ws.cell(row=r, column=4).value  = f'=IF(ABS(C{r})<2,"SI","NO")'
-        ws.cell(row=r, column=5).value  = f'=IF(B{r}>($C$6-2),(IF(B{r}<($C$6+2),"SI","NO2")),"NO1")'
-        ws.cell(row=r, column=7).value  = f'=A{r}'
-        ws.cell(row=r, column=8).value  = f'=HR!{col}308'
-        ws.cell(row=r, column=9).value  = f'=H${row_global}-H{r}'
-        ws.cell(row=r, column=10).value = f'=IF(ABS(I{r})<5,"SI","NO")'
-        ws.cell(row=r, column=11).value = f'=IF(H{r}>($C$7-5),(IF(H{r}<($C$7+5),"SI","NO2")),"NO1")'
+        # Slot izquierdo (columnas 1-5): temperatura normalmente; humedad si
+        # la temperatura fue excluida (ver slot_izq más arriba).
+        if slot_izq == 'temp':
+            ws.cell(row=r, column=1).value = f'={_cl(tc)}15'
+            ws.cell(row=r, column=2).value  = f'=T!{col}308'
+            ws.cell(row=r, column=3).value  = f'=B${row_global}-B{r}'
+            ws.cell(row=r, column=4).value  = f'=IF(ABS(C{r})<2,"SI","NO")'
+            ws.cell(row=r, column=5).value  = f'=IF(B{r}>($C$6-2),(IF(B{r}<($C$6+2),"SI","NO2")),"NO1")'
+        elif slot_izq == 'hum':
+            ws.cell(row=r, column=1).value = f'={_cl(tc)}15'
+            ws.cell(row=r, column=2).value  = f'=HR!{col}308'
+            ws.cell(row=r, column=3).value  = f'=B${row_global}-B{r}'
+            ws.cell(row=r, column=4).value  = f'=IF(ABS(C{r})<5,"SI","NO")'
+            ws.cell(row=r, column=5).value  = f'=IF(B{r}>($C$7-5),(IF(B{r}<($C$7+5),"SI","NO2")),"NO1")'
+        else:
+            for c in (1, 2, 3, 4, 5):
+                _wipe_plain(r, c)
+        # Slot derecho (columnas 7-11): solo existe cuando ambas variables
+        # están incluidas (si se excluye temperatura, humedad ya se movió
+        # al slot izquierdo y este lado queda vacío).
+        if slot_der == 'hum':
+            # Independiente de la columna A: así se puede borrar A (temp excluida)
+            # sin dejar en blanco el identificador propio de la tabla de humedad.
+            ws.cell(row=r, column=7).value  = f'={_cl(tc)}15'
+            ws.cell(row=r, column=8).value  = f'=HR!{col}308'
+            ws.cell(row=r, column=9).value  = f'=H${row_global}-H{r}'
+            ws.cell(row=r, column=10).value = f'=IF(ABS(I{r})<5,"SI","NO")'
+            ws.cell(row=r, column=11).value = f'=IF(H{r}>($C$7-5),(IF(H{r}<($C$7+5),"SI","NO2")),"NO1")'
+        else:
+            for c in (7, 8, 9, 10, 11):
+                _wipe_plain(r, c)
 
         # Apply explicit font to new rows so they match the template sensor rows
         if pos > 9:
@@ -772,39 +902,125 @@ def _llenar_analisis(wb, config: ProyectoConfig, n: int, sensores: List[Sensor])
         if not isinstance(cell, _MC):
             cell.value = v
 
-    # Global avg row
-    _w(row_global, 2, '=T!D311')
-    _w(row_global, 8, '=HR!D311')
+    # Helper: blank an entire row's cells (cols 1-11) and hide it — used when a
+    # whole row belongs exclusively to a variable that was excluded.
+    def _clear_hide_row(row: int) -> None:
+        for c in range(1, 12):
+            _w(row, c, None)
+        ws.row_dimensions[row].hidden = True
 
-    # Trecolector temp (row_t_check)
-    _w(row_t_check, 1, config.setpoint_temp)
-    _w(row_t_check, 2, '=T!D311')
-    _w(row_t_check, 3, '=T!D312')
-    _w(row_t_check, 4, '=T!D313')
-    _w(row_t_check, 5, f'=A{row_t_check}-C{row_t_check}')
-    _w(row_t_check, 6, f'=D{row_t_check}-A{row_t_check}')
-    _w(row_t_check, 7, f'=IF(ABS(E{row_t_check})<2,IF(ABS(F{row_t_check}<2),"SI","NO"),"NO")')
+    def _clear_hide_rows(rows) -> None:
+        for row in rows:
+            _clear_hide_row(row)
 
-    # Trecolector HR (row_h_check)
-    _w(row_h_check, 1, config.setpoint_hum)
-    _w(row_h_check, 2, '=HR!D311')
-    _w(row_h_check, 3, '=HR!D312')
-    _w(row_h_check, 4, '=HR!D313')
-    _w(row_h_check, 5, f'=A{row_h_check}-C{row_h_check}')
-    _w(row_h_check, 6, f'=D{row_h_check}-A{row_h_check}')
-    _w(row_h_check, 7, f'=IF(ABS(E{row_h_check})<5,IF(ABS(F{row_h_check}<5),"SI","NO"),"NO")')
+    # Blank value + fill + border for a single cell (anchor or merged slave —
+    # both accept fill/border assignment in openpyxl, only .value is restricted
+    # to the anchor). Used so an excluded variable's header leaves no trace
+    # (no leftover blue fill / grid on an otherwise empty-looking table).
+    def _wipe(r, c):
+        _w(r, c, None)
+        cell = ws.cell(row=r, column=c)
+        cell.fill   = PatternFill()
+        cell.border = openpyxl.styles.Border()
 
-    # Tabla 5 — temp
-    _w(row_t5_t, 1, f'=B23')
-    _w(row_t5_t, 3, f'=B{row_t5_t}-A{row_t5_t}')
-    _w(row_t5_t, 4, f'=IF(ABS(C{row_t5_t})<1,"SI","NO")')
-    _w(row_t5_t, 2, round(float(config.lectura_equipo_temp), 2))
+    # ── Títulos y encabezados de Tabla 2/3 (filas fijas 19, 21, 22) ─────────────
+    # Estas filas son compartidas: temperatura ocupa las columnas A-F y humedad
+    # G-K en la MISMA fila, así que no se puede ocultar la fila completa — solo
+    # se limpian las celdas propias de la variable excluida (incluyendo las
+    # celdas esclavas de los merges A21:A22, B21:C21, G21:G22, H21:I21).
+    if slot_izq == 'temp':
+        pass  # la plantilla ya trae el texto de temperatura en cols 1-5
+    elif slot_izq == 'hum':
+        # Humedad ocupa el slot izquierdo (temperatura excluida): se
+        # reescribe el texto (mismo relleno/borde azul de la plantilla, que
+        # no se toca) para que la tabla de humedad quede donde estaba la de
+        # temperatura, sin dejar un hueco vacío.
+        _w(19, 1, 'Tabla 3: Distribución de la humedad relativa')
+        _w(21, 1, 'Recolector')
+        _w(21, 2, 'Humedad relativa (%)')
+        _w(21, 4, 'Cumple')
+        _w(21, 5, 'Rango')
+        _w(22, 2, 'Media del recolector')
+        _w(22, 3, 'Diferencia')
+        _w(22, 4, 'Si/No')
+        _w(22, 5, 'Si/No')
+    else:
+        _wipe(19, 1)                          # "Tabla 2: Distribución de la temperatura"
+        for c in (1, 2, 3, 4, 5):
+            _wipe(21, c)                       # Recolector | Temperatura (°C) | Cumple | Rango
+            _wipe(22, c)                       # Media del recolector | Diferencia | Si/No | Si/No
+    if slot_der != 'hum':
+        _wipe(19, 7)                          # "Tabla 3: Distribución de la humedad relativa"
+        for c in (7, 8, 9, 10, 11):
+            _wipe(21, c)                       # Recolector | Humedad relativa (%) | Cumple | Rango
+            _wipe(22, c)                       # Media del recolector | Diferencia | Si/No | Si/No
 
-    # Tabla 5 — HR
-    _w(row_t5_h, 1, f'=H23')
-    _w(row_t5_h, 3, f'=B{row_t5_h}-A{row_t5_h}')
-    _w(row_t5_h, 4, f'=IF(ABS(C{row_t5_h})<1,"SI","NO")')
-    _w(row_t5_h, 2, round(float(config.lectura_equipo_hum), 1))
+    # Global avg row (shared row — solo se limpia la celda/etiqueta de la variable excluida)
+    if slot_izq == 'temp':
+        _w(row_global, 2, '=T!D311')          # etiqueta "Temperatura promedio" ya está en la plantilla
+    elif slot_izq == 'hum':
+        _w(row_global, 1, 'Humedad relativa promedio')
+        _w(row_global, 2, '=HR!D311')
+    else:
+        _wipe(row_global, 1)
+        # El recuadro de dato es un merge B32:E32 — hay que limpiar las 4
+        # celdas del rango, no solo la ancla (B32), porque al guardar,
+        # openpyxl/Excel reconstruye el borde del merge tomando el de las
+        # celdas esclavas (C,D,E) si estas conservan su borde original.
+        for c in (2, 3, 4, 5):
+            _wipe(row_global, c)
+    if slot_der == 'hum':
+        _w(row_global, 8, '=HR!D311')         # etiqueta "Humedad relativa promedio" ya está en la plantilla
+    else:
+        _wipe(row_global, 7)
+        # Ídem para el merge H32:K32 del lado derecho.
+        for c in (8, 9, 10, 11):
+            _wipe(row_global, c)
+
+    # Trecolector temp (row_t_check) + su encabezado de 2 filas (Tabla 4, exclusivo de temp)
+    if incluir_temp:
+        _w(row_t_check, 1, config.setpoint_temp)
+        _w(row_t_check, 2, '=T!D311')
+        _w(row_t_check, 3, '=T!D312')
+        _w(row_t_check, 4, '=T!D313')
+        _w(row_t_check, 5, f'=A{row_t_check}-C{row_t_check}')
+        _w(row_t_check, 6, f'=D{row_t_check}-A{row_t_check}')
+        _w(row_t_check, 7, f'=IF(ABS(E{row_t_check})<2,IF(ABS(F{row_t_check}<2),"SI","NO"),"NO")')
+    else:
+        _clear_hide_rows((row_t_check - 2, row_t_check - 1, row_t_check))
+
+    # Trecolector HR (row_h_check) + su encabezado de 2 filas (exclusivo de humedad)
+    if incluir_hum:
+        _w(row_h_check, 1, config.setpoint_hum)
+        _w(row_h_check, 2, '=HR!D311')
+        _w(row_h_check, 3, '=HR!D312')
+        _w(row_h_check, 4, '=HR!D313')
+        _w(row_h_check, 5, f'=A{row_h_check}-C{row_h_check}')
+        _w(row_h_check, 6, f'=D{row_h_check}-A{row_h_check}')
+        _w(row_h_check, 7, f'=IF(ABS(E{row_h_check})<5,IF(ABS(F{row_h_check}<5),"SI","NO"),"NO")')
+    else:
+        _clear_hide_rows((row_h_check - 2, row_h_check - 1, row_h_check))
+
+    # Tabla 5 — temp (+ su encabezado de 2 filas)
+    if incluir_temp:
+        _w(row_t5_t, 1, f'=B23')
+        _w(row_t5_t, 3, f'=B{row_t5_t}-A{row_t5_t}')
+        _w(row_t5_t, 4, f'=IF(ABS(C{row_t5_t})<1,"SI","NO")')
+        _w(row_t5_t, 2, round(float(config.lectura_equipo_temp), 2))
+    else:
+        _clear_hide_rows((row_t5_t - 2, row_t5_t - 1, row_t5_t))
+
+    # Tabla 5 — HR (+ su encabezado de 2 filas)
+    # La referencia a la fila 23 depende del slot: si humedad quedó en el
+    # slot izquierdo (solo humedad) su promedio vive en B23, no en H23.
+    if incluir_hum:
+        _hum23_ref = 'B23' if slot_izq == 'hum' else 'H23'
+        _w(row_t5_h, 1, f'={_hum23_ref}')
+        _w(row_t5_h, 3, f'=B{row_t5_h}-A{row_t5_h}')
+        _w(row_t5_h, 4, f'=IF(ABS(C{row_t5_h})<1,"SI","NO")')
+        _w(row_t5_h, 2, round(float(config.lectura_equipo_hum), 1))
+    else:
+        _clear_hide_rows((row_t5_h - 2, row_t5_h - 1, row_t5_h))
 
     # Tabla 6 — localización de puntos críticos
     # Template uses cols B-J (pos+1) for sensors 1-9; extend naturally for N>9.
@@ -816,8 +1032,8 @@ def _llenar_analisis(wb, config: ProyectoConfig, n: int, sensores: List[Sensor])
         t6_col = pos + 1  # B=2 for pos1, K=11 for pos10, L=12 for pos11...
         _w(row_t6_id,  t6_col, f'={col}14')
         _w(row_t6_ser, t6_col, f'={col}15')
-        _w(row_t6_ta,  t6_col, f'=T!{col}308')
-        _w(row_t6_ha,  t6_col, f'=HR!{col}308')
+        _w(row_t6_ta,  t6_col, f'=T!{col}308' if incluir_temp else None)
+        _w(row_t6_ha,  t6_col, f'=HR!{col}308' if incluir_hum else None)
         # For new sensor columns (beyond original 9), copy border+font style from reference col J
         if pos > 9:
             for row in (row_t6_id, row_t6_ser, row_t6_ta, row_t6_ha):
@@ -836,18 +1052,31 @@ def _llenar_analisis(wb, config: ProyectoConfig, n: int, sensores: List[Sensor])
     # Set Tabla 6 row heights (template has 20.4 for temp row, 26.25 for HR row)
     ws.row_dimensions[row_t6_ta].height = 20.4
     ws.row_dimensions[row_t6_ha].height = 26.25
+    if not incluir_temp:
+        ws.row_dimensions[row_t6_ta].hidden = True
+    if not incluir_hum:
+        ws.row_dimensions[row_t6_ha].hidden = True
 
     # Ensure new sensor columns have correct width (13.0 to match template cols D-J)
     for pos in range(10, n + 1):
         ltr = _cl(pos + 1)
         ws.column_dimensions[ltr].width = 13.0
 
-    # Update MAX/MIN promedio formulas to cover all N sensors
+    # Update MAX/MIN promedio formulas to cover all N sensors.
+    # Cada bloque ocupa 4 filas: MAX+leyenda "más caliente/húmedo" (fila +4, con
+    # merge a +5), MIN+leyenda "más frío/menos húmedo" (fila +6, con merge a +7,
+    # que es la fila donde realmente vive la leyenda "Punto más frío/menos húmedo").
     last_t6 = _cl(n + 1)
-    _w(row_t6_ta + 4,  2, f'=MAX(B{row_t6_ta}:{last_t6}{row_t6_ta})')
-    _w(row_t6_ta + 6,  2, f'=MIN(B{row_t6_ta}:{last_t6}{row_t6_ta})')
-    _w(row_t6_ha + 8,  2, f'=MAX(B{row_t6_ha}:{last_t6}{row_t6_ha})')
-    _w(row_t6_ha + 10, 2, f'=MIN(B{row_t6_ha}:{last_t6}{row_t6_ha})')
+    if incluir_temp:
+        _w(row_t6_ta + 4,  2, f'=MAX(B{row_t6_ta}:{last_t6}{row_t6_ta})')
+        _w(row_t6_ta + 6,  2, f'=MIN(B{row_t6_ta}:{last_t6}{row_t6_ta})')
+    else:
+        _clear_hide_rows(range(row_t6_ta + 4, row_t6_ta + 8))
+    if incluir_hum:
+        _w(row_t6_ha + 8,  2, f'=MAX(B{row_t6_ha}:{last_t6}{row_t6_ha})')
+        _w(row_t6_ha + 10, 2, f'=MIN(B{row_t6_ha}:{last_t6}{row_t6_ha})')
+    else:
+        _clear_hide_rows(range(row_t6_ha + 8, row_t6_ha + 12))
 
     # Color extremes in Tabla 6:
     #   Temp más caliente → rojo  | Temp más frío   → azul claro
@@ -859,11 +1088,11 @@ def _llenar_analisis(wb, config: ProyectoConfig, n: int, sensores: List[Sensor])
     for s in sensores:
         if s.datos is None or len(s.datos) == 0:
             continue
-        if 'temperatura' in s.datos.columns:
+        if incluir_temp and 'temperatura' in s.datos.columns:
             vals = s.datos['temperatura'].dropna()
             if len(vals) > 0:
                 _temp_avgs[s.posicion] = float(vals.mean())
-        if 'humedad' in s.datos.columns:
+        if incluir_hum and 'humedad' in s.datos.columns:
             vals = s.datos['humedad'].dropna()
             if len(vals) > 0:
                 _hum_avgs[s.posicion] = float(vals.mean())
@@ -920,15 +1149,21 @@ def _serie_xml(idx: int, sheet: str, col: str) -> str:
     )
 
 
-def _patch_chart_n_sensores(ruta_salida: str, n: int) -> None:
+def _patch_chart_n_sensores(ruta_salida: str, n: int,
+                             incluir_temp: bool = True, incluir_hum: bool = True) -> None:
     """Replace series in GT (chart1) and GHR (chart3) for exactly N sensors."""
     contenido: dict[str, bytes] = {}
     with zipfile.ZipFile(ruta_salida, 'r') as zo:
         for name in zo.namelist():
             contenido[name] = zo.read(name)
 
-    for chart_file, sheet in [('xl/charts/chart1.xml', 'T'),
-                               ('xl/charts/chart3.xml', 'HR')]:
+    charts_a_parchar = []
+    if incluir_temp:
+        charts_a_parchar.append(('xl/charts/chart1.xml', 'T'))
+    if incluir_hum:
+        charts_a_parchar.append(('xl/charts/chart3.xml', 'HR'))
+
+    for chart_file, sheet in charts_a_parchar:
         if chart_file not in contenido:
             continue
         xml = contenido[chart_file].decode('utf-8', errors='replace')

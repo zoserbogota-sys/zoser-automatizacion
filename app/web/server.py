@@ -294,6 +294,8 @@ def _build_config(data: dict) -> ProyectoConfig:
     c.setpoint_temp  = float(data['sp_temp'])
     c.setpoint_hum   = float(data['sp_hum'])
     c.num_sensores   = max(1, min(120, int(data.get('num_sensores', 9))))
+    vc = data.get('variable_calificacion', 'ambas')
+    c.variable_calificacion = vc if vc in ('temperatura', 'humedad', 'ambas') else 'ambas'
     c.empresa        = data.get('empresa', '')
     c.marca_equipo   = data.get('marca', '')
     c.ubicacion      = data.get('ubicacion', '')

@@ -31,6 +31,9 @@ class ProyectoConfig:
     num_sensores: int = 9
     ensayo: str = ""          # código base del ensayo, ej. "B6367-110226"
 
+    # "temperatura" | "humedad" | "ambas" — variable(s) a calificar en este ensayo.
+    variable_calificacion: str = "ambas"
+
     # Equipment's own display/controller reading for Tabla 5 (dynamic evaluation).
     # If not provided by the user, defaults to the setpoint (difference ≈ 0 → passes).
     lectura_equipo_temp: float = 0.0

@@ -899,6 +899,47 @@
                 </template>
               </div>
             </div>
+
+            <div class="glass-card p-6">
+              <div class="flex items-center gap-2.5 mb-5">
+                <div class="card-accent"></div>
+                <p class="text-sm font-semibold text-slate-800">Variable a calificar</p>
+              </div>
+              <div class="flex gap-3">
+                <button @click="variableCalificacion = 'ambas'"
+                  :class="variableCalificacion === 'ambas'
+                    ? 'text-white border-transparent shadow-lg'
+                    : 'bg-white text-slate-500 border-slate-200 hover:border-brand-400 hover:text-brand-800'"
+                  :style="variableCalificacion === 'ambas' ? 'background:linear-gradient(135deg,#1D4ED8,#1E3A8A);' : ''"
+                  class="flex-1 py-2.5 rounded-xl border text-sm font-semibold transition-all">
+                  Temperatura + Humedad
+                </button>
+                <button @click="variableCalificacion = 'temperatura'"
+                  :class="variableCalificacion === 'temperatura'
+                    ? 'text-white border-transparent shadow-lg'
+                    : 'bg-white text-slate-500 border-slate-200 hover:border-brand-400 hover:text-brand-800'"
+                  :style="variableCalificacion === 'temperatura' ? 'background:linear-gradient(135deg,#1D4ED8,#1E3A8A);' : ''"
+                  class="flex-1 py-2.5 rounded-xl border text-sm font-semibold transition-all">
+                  Solo Temperatura
+                </button>
+                <button @click="variableCalificacion = 'humedad'"
+                  :class="variableCalificacion === 'humedad'
+                    ? 'text-white border-transparent shadow-lg'
+                    : 'bg-white text-slate-500 border-slate-200 hover:border-brand-400 hover:text-brand-800'"
+                  :style="variableCalificacion === 'humedad' ? 'background:linear-gradient(135deg,#1D4ED8,#1E3A8A);' : ''"
+                  class="flex-1 py-2.5 rounded-xl border text-sm font-semibold transition-all">
+                  Solo Humedad
+                </button>
+              </div>
+              <div class="flex items-center gap-2 mt-4 bg-blue-50 border border-blue-100 rounded-xl px-4 py-2.5">
+                <svg class="w-3.5 h-3.5 text-brand-700 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
+                  <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clip-rule="evenodd"/>
+                </svg>
+                <p class="text-xs text-brand-900 font-medium">
+                  Las hojas y resultados de la variable no seleccionada se ocultarán en el Excel final.
+                </p>
+              </div>
+            </div>
           </div>
         </template>
 
@@ -1264,6 +1305,7 @@
         files:       { primarios: null, fallas: null, plantilla: null },
         uploading:   { primarios: false, fallas: false, plantilla: false },
         numSensores: 9,
+        variableCalificacion: 'ambas',
 
         // Paso 2
         sensores:  [],
@@ -1354,6 +1396,7 @@
             ruta_fallas:    this.files.fallas?.path,
             ruta_plantilla: this.files.plantilla?.path,
             num_sensores:   this.numSensores,
+            variable_calificacion: this.variableCalificacion,
             sensores:       this.sensores,
             ini_fecha:      this.iniFecha,
             ini_hora:       this.iniHora,
