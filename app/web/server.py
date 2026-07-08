@@ -23,6 +23,10 @@ OUTPUT_DIR = os.path.join(tempfile.gettempdir(), 'calificadoria_output')
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
+# Plantilla bundleada — hasta nuevo aviso, no se sube manualmente.
+_APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+PLANTILLA_PROYECTO = os.path.join(_APP_DIR, 'data', 'plantillaProyecto.xlsx')
+
 _sessions: dict = {}
 
 
@@ -283,7 +287,7 @@ def _build_config(data: dict) -> ProyectoConfig:
     c = ProyectoConfig()
     c.ruta_primarios = data['ruta_primarios']
     c.ruta_fallas    = data['ruta_fallas']
-    c.ruta_plantilla = data['ruta_plantilla']
+    c.ruta_plantilla = data.get('ruta_plantilla') or PLANTILLA_PROYECTO
     c.inicio_24h     = _parsear_fecha_hora(data['ini_fecha'], data['ini_hora'], "Inicio 24h")
     c.inicio_falla   = _parsear_fecha_hora(data['falla_fecha'], data['falla_hora'], "Inicio falla")
     c.tipo_prueba    = data['tipo_prueba']

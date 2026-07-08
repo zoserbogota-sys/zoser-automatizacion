@@ -1297,13 +1297,14 @@
         ],
 
         // Paso 1
+        // La plantilla (.xlsx) ya no se sube manualmente — el servidor usa
+        // siempre la que está guardada en el equipo.
         fileFields: {
           primarios: { label: 'Excel Primarios (.xlsx)',  icon: '📊' },
           fallas:    { label: 'Excel Fallas (.xlsx)',     icon: '⚡' },
-          plantilla: { label: 'Plantilla (.xlsx)',        icon: '📋' },
         },
-        files:       { primarios: null, fallas: null, plantilla: null },
-        uploading:   { primarios: false, fallas: false, plantilla: false },
+        files:       { primarios: null, fallas: null },
+        uploading:   { primarios: false, fallas: false },
         numSensores: 9,
         variableCalificacion: 'ambas',
 
@@ -1361,8 +1362,8 @@
             alert('Selecciona el archivo de Primarios primero.')
             return
           }
-          if (!this.files.fallas || !this.files.plantilla) {
-            alert('Selecciona también los archivos de Fallas y Plantilla antes de continuar.')
+          if (!this.files.fallas) {
+            alert('Selecciona también el archivo de Fallas antes de continuar.')
             return
           }
           this.detecting = true
@@ -1376,6 +1377,11 @@
             if (data.error) { alert('Error al leer sensores: ' + data.error) }
             else {
               this.sensores = data.sensores
+              // El total de sensores para configurar el Excel (incluidas
+              // las gráficas GT/GHR) debe coincidir con lo que realmente
+              // hay en Primarios, no con el valor que haya quedado en el
+              // campo "Total de sensores" antes de detectar.
+              this.numSensores = data.sensores.length
               this.rangoPrimarios = data.rango_primarios
               this.rangoFallas    = data.rango_fallas
               this.step = 1
@@ -1394,7 +1400,6 @@
           const payload = {
             ruta_primarios: this.files.primarios?.path,
             ruta_fallas:    this.files.fallas?.path,
-            ruta_plantilla: this.files.plantilla?.path,
             num_sensores:   this.numSensores,
             variable_calificacion: this.variableCalificacion,
             sensores:       this.sensores,

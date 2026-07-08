@@ -38,11 +38,18 @@ for _lm in [None, 60000, 40000, 20000, 10000]:
             f'<a:lumMod val="{_lm}"/>' if _lm else ''
         )
         _CHART_LINE_STYLES.append(
-            f'<a:ln w="28575" cap="rnd" cmpd="sng" algn="ctr">'
+            # xmlns:a inline: cuando el chart usa el namespace sin prefijo
+            # 'c:' (ver _patch_chart_n_sensores), no hay una declaración raíz
+            # de xmlns:a — cada <a:ln> debe traer la suya (redundante pero
+            # válido si además hay una declaración raíz, como en el estilo
+            # con prefijo 'c:').
+            f'<a:ln xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" '
+            f'w="28575" cap="rnd" cmpd="sng" algn="ctr">'
             f'<a:solidFill><a:schemeClr val="accent{_acc}">'
             f'{_inner}<a:shade val="95000"/><a:satMod val="105000"/>'
             f'</a:schemeClr></a:solidFill>'
-            f'<a:prstDash val="solid"/><a:round/></a:ln><a:effectLst/>'
+            f'<a:prstDash val="solid"/><a:round/></a:ln>'
+            f'<a:effectLst xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"/>'
         )
 
 # ─────────────────────────────────────────────────────────────────
@@ -1160,29 +1167,36 @@ def _llenar_analisis(wb, config: ProyectoConfig, n: int, sensores: List[Sensor],
 #  CHART XML PATCHING — N series for GT and GHR
 # ─────────────────────────────────────────────────────────────────
 
-def _serie_xml(idx: int, sheet: str, col: str) -> str:
+def _serie_xml(idx: int, sheet: str, col: str, p: str = 'c:') -> str:
+    # `p` es el prefijo real del namespace del chart en este archivo ('c:' o
+    # '' \u2014 openpyxl no siempre conserva el prefijo al reguardar el libro,
+    # ver _patch_chart_n_sensores). 'a:' (drawingml) siempre va prefijado.
     spPr = _CHART_LINE_STYLES[idx % len(_CHART_LINE_STYLES)]
     return (
-        f'<c:ser>'
-        f'<c:idx val="{idx}"/><c:order val="{idx}"/>'
-        f'<c:tx><c:strRef><c:f>{sheet}!${col}$14</c:f>'
-        f'<c:strCache><c:ptCount val="1"/>'
-        f'<c:pt idx="0"><c:v>Posici\u00f3n {idx+1}</c:v></c:pt>'
-        f'</c:strCache></c:strRef></c:tx>'
-        f'<c:spPr>{spPr}</c:spPr>'
-        f'<c:marker><c:symbol val="none"/></c:marker>'
-        f'<c:xVal><c:numRef>'
-        f'<c:f>{sheet}!$C$17:$C$305</c:f>'
-        f'<c:numCache>'
-        f'<c:formatCode>dd/mm/yyyy\\ hh:mm\\ AM/PM</c:formatCode>'
-        f'<c:ptCount val="0"/>'
-        f'</c:numCache></c:numRef></c:xVal>'
-        f'<c:val><c:numRef>'
-        f'<c:f>{sheet}!${col}$17:${col}$305</c:f>'
-        f'<c:numCache><c:formatCode>0.00</c:formatCode>'
-        f'<c:ptCount val="0"/>'
-        f'</c:numCache></c:numRef></c:val>'
-        f'</c:ser>'
+        f'<{p}ser>'
+        f'<{p}idx val="{idx}"/><{p}order val="{idx}"/>'
+        f'<{p}tx><{p}strRef><{p}f>{sheet}!${col}$14</{p}f>'
+        f'<{p}strCache><{p}ptCount val="1"/>'
+        f'<{p}pt idx="0"><{p}v>Posici\u00f3n {idx+1}</{p}v></{p}pt>'
+        f'</{p}strCache></{p}strRef></{p}tx>'
+        f'<{p}spPr>{spPr}</{p}spPr>'
+        f'<{p}marker><{p}symbol val="none"/></{p}marker>'
+        f'<{p}xVal><{p}numRef>'
+        f'<{p}f>{sheet}!$C$17:$C$305</{p}f>'
+        f'<{p}numCache>'
+        f'<{p}formatCode>dd/mm/yyyy\\ hh:mm\\ AM/PM</{p}formatCode>'
+        f'<{p}ptCount val="0"/>'
+        f'</{p}numCache></{p}numRef></{p}xVal>'
+        # Bug corregido: esta serie es de un scatterChart, que requiere
+        # xVal/yVal \u2014 la versi\u00f3n anterior escrib\u00eda <val> (v\u00e1lido solo para
+        # bar/line/pie), lo que dejaba la serie sin datos visibles.
+        f'<{p}yVal><{p}numRef>'
+        f'<{p}f>{sheet}!${col}$17:${col}$305</{p}f>'
+        f'<{p}numCache><{p}formatCode>0.00</{p}formatCode>'
+        f'<{p}ptCount val="0"/>'
+        f'</{p}numCache></{p}numRef></{p}yVal>'
+        f'<{p}smooth val="1"/>'
+        f'</{p}ser>'
     )
 
 
@@ -1205,9 +1219,16 @@ def _patch_chart_n_sensores(ruta_salida: str, n: int,
             continue
         xml = contenido[chart_file].decode('utf-8', errors='replace')
 
+        # openpyxl no siempre conserva el prefijo 'c:' del namespace del
+        # chart al reguardar el libro (a veces lo declara como namespace por
+        # defecto, sin prefijo) — hay que detectar cuál usa ESTE archivo en
+        # vez de asumir 'c:' siempre, o el reemplazo no encuentra nada y la
+        # gráfica se queda con las series viejas/vacías de la plantilla.
+        p = 'c:' if re.search(r'<c:(chartSpace|ser)\b', xml) else ''
+
         # Build new series block for N sensors
         new_series = ''.join(
-            _serie_xml(i, sheet, _cl(_t_data_col(i + 1)))
+            _serie_xml(i, sheet, _cl(_t_data_col(i + 1)), p=p)
             for i in range(n)
         )
 
@@ -1218,12 +1239,15 @@ def _patch_chart_n_sensores(ruta_salida: str, n: int,
         # Greedy .* captures from the first <c:ser> to the LAST </c:ser>
         # and replaces the whole block at its original position, keeping
         # <c:axId> and all other chart elements where they belong.
-        if '<c:ser>' in xml:
-            xml = re.sub(r'<c:ser>.*</c:ser>', new_series, xml,
+        ser_open, ser_close = f'<{p}ser>', f'</{p}ser>'
+        if ser_open in xml:
+            pattern = re.escape(ser_open) + r'.*' + re.escape(ser_close)
+            xml = re.sub(pattern, lambda _m: new_series, xml,
                          count=1, flags=re.DOTALL)
         else:
             # No existing series — insert before the chart closing tag
-            for anchor in ['</c:scatterChart>', '</c:lineChart>', '</c:barChart>']:
+            for base in ('scatterChart', 'lineChart', 'barChart'):
+                anchor = f'</{p}{base}>'
                 if anchor in xml:
                     xml = xml.replace(anchor, new_series + anchor, 1)
                     break
