@@ -1350,6 +1350,12 @@ def _patch_chart_fallas(ruta_salida: str, sheet_ft: str, sheet_fh: str,
                     xml = xml.replace(anchor, new_series + anchor, 1)
                     break
 
+        # La plantilla trae el título del eje Y de la gráfica de Fallas HR
+        # copiado (y nunca corregido) de la de Fallas Tem — dice
+        # "Temperatura (°C)" cuando debería decir "Humedad relativa (%)".
+        if chart_file == 'xl/charts/chart4.xml':
+            xml = xml.replace('Temperatura (°C)', 'Humedad relativa (%)')
+
         contenido[chart_file] = xml.encode('utf-8')
 
     tmp = ruta_salida + '.chartfallas.tmp'
